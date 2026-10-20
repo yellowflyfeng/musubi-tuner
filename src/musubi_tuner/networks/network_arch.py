@@ -20,6 +20,11 @@ def detect_arch_config(unet):
 
         return WAN_TARGET_REPLACE_MODULES, [r".*(patch_embedding|text_embedding|time_embedding|time_projection|norm|head).*"]
 
+    if "QwenImage21TransformerBlock" in module_class_names:
+        from .lora_qwen_image_21 import QWEN_IMAGE_21_TARGET_REPLACE_MODULES
+
+        return QWEN_IMAGE_21_TARGET_REPLACE_MODULES, []
+
     if "QwenImageTransformerBlock" in module_class_names:
         from .lora_qwen_image import QWEN_IMAGE_TARGET_REPLACE_MODULES
 

@@ -1,8 +1,9 @@
 import argparse
 import logging
 import os
+import re
 import shutil
-from typing import Callable
+from typing import Callable, Optional
 
 import accelerate
 import torch
@@ -96,6 +97,16 @@ class LossRecorder:
 
 def get_epoch_ckpt_name(model_name, epoch_no: int):
     return EPOCH_FILE_NAME.format(model_name, epoch_no) + ".safetensors"
+
+
+def parse_step_from_state_dir(state_dir: str) -> Optional[int]:
+    """从 `<name>-step00012000-state` 这样的目录名里解析步数，用于 --resume 接着步数跑。
+
+    musubi 的 state 只保存权重/优化器/调度器，不保存进度；不恢复步数的话续训会从 0 重新计数，
+    导致 checkpoint 重名覆盖、并多跑满一整轮。
+    """
+    m = re.search(r"step(\d+)", os.path.basename(os.path.normpath(state_dir)))
+    return int(m.group(1)) if m else None
 
 
 def get_step_ckpt_name(model_name, step_no: int):

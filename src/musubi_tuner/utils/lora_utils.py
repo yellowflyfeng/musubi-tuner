@@ -257,8 +257,9 @@ def load_safetensors_with_lora_and_fp8(
                         conved = torch.nn.functional.conv2d(down_weight.permute(1, 0, 2, 3), up_weight).permute(1, 0, 2, 3)
                         model_weight = model_weight + multiplier * conved * scale
 
-                    if original_dtype.itemsize == 1:  # fp8
-                        model_weight = model_weight.to(original_dtype)  # convert back to original dtype
+                    # LoRA tensors may be fp32 even when the base is fp16/bf16.
+                    # Restore the base dtype after merging, before FP8 scale creation.
+                    model_weight = model_weight.to(original_dtype)
 
                     # remove LoRA keys from set
                     lora_weight_keys.remove(down_key)

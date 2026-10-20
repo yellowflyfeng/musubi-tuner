@@ -18,6 +18,7 @@ from musubi_tuner.dataset.architectures import (
     ARCHITECTURE_KREA2_FULL,
     ARCHITECTURE_MINIMAX_H3_FULL,
     ARCHITECTURE_QWEN_IMAGE_FULL,
+    ARCHITECTURE_QWEN_IMAGE_21_FULL,
     ARCHITECTURE_WAN_FULL,
     ARCHITECTURE_Z_IMAGE_FULL,
 )
@@ -244,6 +245,22 @@ def save_latent_cache_krea2(item_info: ItemInfo, latent: torch.Tensor):
     sd = {f"latents_{F}x{H}x{W}_{dtype_str}": latent.detach().cpu().contiguous()}
 
     save_latent_cache_common(item_info, sd, ARCHITECTURE_KREA2_FULL)
+
+
+def save_latent_cache_qwen_image_21(item_info: ItemInfo, latent: torch.Tensor):
+    """Qwen-Image-2.1: 单图，VAE 16 倍下采样、z_dim=64，latent 已按 (raw - mean) / std 归一化。
+
+    2.1 的 DiT 不做 patchify，latent 直接按空间展平成 token，所以这里存 3 维 (C, H, W)，
+    key 里的 F 固定为 1，与 z-image / ideogram4 的写法一致。
+    """
+    assert latent.dim() == 3, "latent should be 3D tensor (channel, height, width)"
+
+    _, H, W = latent.shape
+    F = 1
+    dtype_str = dtype_to_str(latent.dtype)
+    sd = {f"latents_{F}x{H}x{W}_{dtype_str}": latent.detach().cpu().contiguous()}
+
+    save_latent_cache_common(item_info, sd, ARCHITECTURE_QWEN_IMAGE_21_FULL)
 
 
 def save_latent_cache_kandinsky5(
@@ -524,6 +541,15 @@ def save_text_encoder_output_cache_ideogram4(item_info: ItemInfo, features: torc
     sd[f"varlen_i4_llm_features_{dtype_str}"] = features.detach().cpu()
 
     save_text_encoder_output_cache_common(item_info, sd, ARCHITECTURE_IDEOGRAM4_FULL)
+
+
+def save_text_encoder_output_cache_qwen_image_21(item_info: ItemInfo, embed: torch.Tensor):
+    """Qwen-Image-2.1: Qwen3-VL 最后一层 decoder 输出（未过最终 RMSNorm），变长 (L, 4096)。"""
+    sd = {}
+    dtype_str = dtype_to_str(embed.dtype)
+    sd[f"varlen_vl21_embed_{dtype_str}"] = embed.detach().cpu()
+
+    save_text_encoder_output_cache_common(item_info, sd, ARCHITECTURE_QWEN_IMAGE_21_FULL, merge_existing=False)
 
 
 def save_text_encoder_output_cache_hidream_o1(

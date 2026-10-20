@@ -451,6 +451,7 @@ def _add_timestep_args(parser: argparse.ArgumentParser) -> None:
             "flux2_shift",
             "ideogram4_shift",
             "qwen_shift",
+            "qwen21_shift",
             "krea2_shift",
             "logsnr",
             "qinglong_flux",
@@ -620,6 +621,13 @@ def _add_save_load_args(parser: argparse.ArgumentParser) -> None:
         help="base name of trained model file / 学習後のモデルの拡張子を除くファイル名",
     )
     parser.add_argument("--resume", type=str, default=None, help="saved state to resume training / 学習再開するモデルのstate")
+    parser.add_argument(
+        "--resume_step",
+        type=int,
+        default=None,
+        help="step to continue from when resuming; inferred from the state directory name if omitted"
+        " / --resume時に再開するステップ数。省略時はstateディレクトリ名から推定",
+    )
 
     parser.add_argument(
         "--save_every_n_epochs",

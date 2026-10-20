@@ -94,6 +94,7 @@ DIRECT_TIMESTEP_SAMPLING_METHODS = frozenset(
         "shift",
         "flux_shift",
         "qwen_shift",
+        "qwen21_shift",
         "krea2_shift",
         "ideogram4_shift",
         "logsnr",
@@ -653,6 +654,9 @@ class NetworkTrainer:
                             mu = train_utils.get_lin_function(y1=0.5, y2=1.15)((h // 2) * (w // 2))
                         elif args.timestep_sampling == "flux2_shift":
                             mu = train_utils.get_lin_function(y1=0.5, y2=1.15)(h * w)
+                        elif args.timestep_sampling == "qwen21_shift":
+                            # Qwen-Image-2.1: patch_size=1，latent 直接展平，token 数 = h * w（无 2x2 打包）
+                            mu = train_utils.get_lin_function(x1=256, y1=0.5, x2=8192, y2=0.9)(h * w)
                         elif args.timestep_sampling == "qwen_shift":
                             mu = train_utils.get_lin_function(x1=256, y1=0.5, x2=8192, y2=0.9)((h // 2) * (w // 2))
                         elif args.timestep_sampling == "krea2_shift":
@@ -2056,8 +2060,21 @@ class NetworkTrainer:
         # TODO skip until initial step
         progress_bar = tqdm(range(args.max_train_steps), smoothing=0, disable=not accelerator.is_local_main_process, desc="steps")
 
-        epoch_to_start = 0
-        global_step = 0
+        # --resume 续训：从 state 目录名解析已完成步数，接着计数（musubi 原本硬编码为 0）
+        initial_step = 0
+        if args.resume:
+            initial_step = getattr(args, "resume_step", None) or train_utils.parse_step_from_state_dir(args.resume) or 0
+            if initial_step:
+                logger.info(f"resuming at step {initial_step} / {args.max_train_steps}")
+            else:
+                logger.warning(
+                    "could not determine the resumed step from the state directory name;"
+                    " pass --resume_step to continue the step counter, otherwise it restarts from 0"
+                )
+        epoch_to_start = initial_step // num_update_steps_per_epoch
+        global_step = initial_step
+        if initial_step:
+            progress_bar.update(initial_step)
         last_sampled_step = None
         noise_scheduler = FlowMatchDiscreteScheduler(shift=args.discrete_flow_shift, reverse=True, solver="euler")
 
@@ -2168,7 +2185,17 @@ class NetworkTrainer:
 
             accelerator.unwrap_model(network).on_epoch_start(transformer)
 
-            for step, batch in enumerate(train_dataloader):
+            epoch_dataloader = train_dataloader
+            skip_batches = (
+                (initial_step % num_update_steps_per_epoch) * args.gradient_accumulation_steps
+                if epoch == epoch_to_start and initial_step
+                else 0
+            )
+            if skip_batches:
+                logger.info(f"skipping {skip_batches} batches to resume in the middle of epoch {epoch + 1}")
+                epoch_dataloader = accelerator.skip_first_batches(train_dataloader, skip_batches)
+
+            for step, batch in enumerate(epoch_dataloader):
                 # torch.compiler.cudagraph_mark_step_begin() # for cudagraphs
 
                 latents = batch["latents"]
