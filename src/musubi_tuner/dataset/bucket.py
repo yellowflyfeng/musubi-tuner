@@ -181,6 +181,8 @@ class BucketBatchManager:
         self.bucket_resos.sort()
         self.num_timestep_buckets = num_timestep_buckets
         self.timestep_pool = None
+        self.te_choice: Optional[dict[tuple[Any], list[int]]] = None  # per-epoch caption variant index per bucket position
+        self.has_te_variants = any(item.te_variant_paths for bucket in self.buckets.values() for item in bucket)
 
         # indices for enumerating batches. each batch is reso + batch_idx. reso is (width, height) or (width, height, frames)
         self.bucket_batch_indices: list[tuple[tuple[Any], int]] = []
@@ -239,6 +241,17 @@ class BucketBatchManager:
                 self.timestep_pool.append(all_timesteps[start_idx:end_idx])
                 # print(f"timestep pool {i}: {self.timestep_pool[-1]}")
 
+        if self.has_te_variants:
+            # drawn after every pre-existing shuffle, so batch order and timesteps are unchanged; every worker
+            # reseeds with seed+epoch before shuffle(), so all workers and ranks agree on the choices
+            self.te_choice = {
+                reso: [
+                    random.choices(range(len(item.te_variant_paths)), weights=item.te_variant_weights)[0] if item.te_variant_paths else 0
+                    for item in bucket
+                ]
+                for reso, bucket in self.buckets.items()
+            }
+
     def __len__(self):
         return len(self.bucket_batch_indices)
 
@@ -250,9 +263,12 @@ class BucketBatchManager:
 
         batch_tensor_data = {}
         varlen_keys = set()
-        for item_info in bucket[start:end]:
+        for position, item_info in enumerate(bucket[start:end], start):
             sd_latent = load_file(item_info.latent_cache_path)
-            sd_te = load_file(item_info.text_encoder_output_cache_path)
+            te_path = item_info.text_encoder_output_cache_path
+            if item_info.te_variant_paths and self.te_choice is not None:
+                te_path = item_info.te_variant_paths[self.te_choice[bucket_reso][position]]
+            sd_te = load_file(te_path)
             sd = {**sd_latent, **sd_te}
 
             # TODO refactor this

@@ -441,6 +441,43 @@ Each element in the batch must have the same resolution, which is adjusted by ad
 
 </details>
 
+### Multiple Captions per Image (Caption Variants) / 画像ごとの複数キャプション
+
+An image dataset can use several captions for the same image. Cache the text encoder outputs of each caption variant into its own directory, with a JSONL whose `image_path` is the same as in the main dataset (the cache file name is derived from the image basename). Latents are cached once, in `cache_directory`, as usual.
+
+```toml
+[[datasets]]
+image_jsonl_file = "/path/to/train.jsonl"   # main captions (base)
+cache_directory = "/path/to/cache"           # latents + base text encoder outputs
+text_encoder_cache_base_weight = 1.0
+text_encoder_cache_variants = [
+  { name = "short", directory = "/path/to/cache_te_short", weight = 1.0 },
+  { name = "medium", directory = "/path/to/cache_te_medium", weight = 1.0 },
+]
+```
+
+```bash
+# text encoder outputs of a variant: a dataset config with that variant's JSONL and directory
+python src/musubi_tuner/flux_2_cache_text_encoder_outputs.py --dataset_config short_te.toml ... --skip_existing --keep_cache
+```
+
+- Each time an item is drawn, one of the caches it has (the base cache plus every variant directory containing its file) is chosen with probability proportional to the weights. Items without any variant file always use the base cache.
+- The choices are drawn per epoch after the existing shuffles, from the per-epoch seed, so the batch order and timesteps are the same as without variants, and all data loader workers and processes agree.
+- A variant directory must differ from `cache_directory`. `--skip_existing` does not detect changed caption text, so use a new directory when a variant is regenerated.
+- Variant names, directory names and weights are saved in the dataset metadata of the trained LoRA.
+
+<details>
+<summary>日本語</summary>
+
+同じ画像に複数のキャプションを使用できます。キャプションの種類（バリアント）ごとに、メインのデータセットと同じ`image_path`を持つJSONLを用意し、テキストエンコーダー出力を別のディレクトリにキャッシュしてください（キャッシュファイル名は画像のファイル名から決まります）。latentは通常通り`cache_directory`に一度だけキャッシュします。
+
+- アイテムが選ばれるたびに、そのアイテムが持つキャッシュ（ベースのキャッシュと、ファイルが存在する各バリアント）から、重みに比例した確率で一つが選ばれます。バリアントのないアイテムは常にベースのキャッシュを使用します。
+- 選択はエポックごとのシードから、既存のシャッフルの後に行われるため、バッチ順やタイムステップはバリアントなしの場合と同じで、全てのワーカーとプロセスで一致します。
+- バリアントのディレクトリは`cache_directory`と異なる必要があります。`--skip_existing`はキャプションの変更を検出しないため、バリアントを再生成する場合は新しいディレクトリを使用してください。
+- バリアント名、ディレクトリ名、重みは学習したLoRAのメタデータに保存されます。
+
+</details>
+
 ### Sample for Video Dataset with Control Images
 
 The dataset with control videos is used for training ControlNet models. 

@@ -68,6 +68,9 @@ class ItemInfo:
         self.content = content
         self.latent_cache_path = latent_cache_path
         self.text_encoder_output_cache_path: Optional[str] = None
+        # caption variants: alternative TE caches for the same latent, and their sampling weights
+        self.te_variant_paths: Optional[list[str]] = None
+        self.te_variant_weights: Optional[list[float]] = None
 
         # np.ndarray for video, list[np.ndarray] for image with multiple controls
         self.control_content: Optional[Union[np.ndarray, list[np.ndarray]]] = None
@@ -333,6 +336,8 @@ class ImageDataset(BaseDataset):
         fp_1f_no_post: Optional[bool] = False,
         no_resize_control: Optional[bool] = False,
         control_resolution: Optional[Tuple[int, int]] = None,
+        text_encoder_cache_variants: Optional[Sequence[dict]] = None,
+        text_encoder_cache_base_weight: float = 1.0,
         debug_dataset: bool = False,
         architecture: str = "no_default",
     ):
@@ -357,6 +362,16 @@ class ImageDataset(BaseDataset):
         self.fp_1f_no_post = fp_1f_no_post
         self.no_resize_control = no_resize_control
         self.control_resolution = control_resolution
+        self.text_encoder_cache_variants = [dict(v) for v in (text_encoder_cache_variants or [])]
+        self.text_encoder_cache_base_weight = float(text_encoder_cache_base_weight)
+        for variant in self.text_encoder_cache_variants:
+            # identical basenames would overwrite or alias the base captions
+            if cache_directory is not None and os.path.realpath(variant["directory"]) == os.path.realpath(cache_directory):
+                raise ValueError(f"text_encoder_cache_variants directory must differ from cache_directory: {variant['directory']}")
+            if variant["weight"] < 0:
+                raise ValueError(f"text_encoder_cache_variants weight must be nonnegative: {variant}")
+        if self.text_encoder_cache_base_weight < 0:
+            raise ValueError("text_encoder_cache_base_weight must be nonnegative")
 
         if self.architecture == ARCHITECTURE_MINIMAX_H3:
             # one-frame (image) training: t2va targets (K=0), fl2va editing/inbetween targets with
@@ -437,6 +452,12 @@ class ImageDataset(BaseDataset):
         if self.control_directory is not None:
             metadata["control_directory"] = os.path.basename(self.control_directory)
         metadata["has_control"] = self.has_control
+        if self.text_encoder_cache_variants:
+            metadata["text_encoder_cache_base_weight"] = self.text_encoder_cache_base_weight
+            metadata["text_encoder_cache_variants"] = [
+                {"name": v["name"], "directory": os.path.basename(os.path.normpath(v["directory"])), "weight": v["weight"]}
+                for v in self.text_encoder_cache_variants
+            ]
         return metadata
 
     def get_total_image_count(self):
@@ -606,6 +627,15 @@ class ImageDataset(BaseDataset):
         # glob cache files
         latent_cache_files = glob.glob(os.path.join(self.cache_directory, f"*_{self.architecture}.safetensors"))
 
+        # caption variants: the set of TE cache file names present in each variant directory
+        te_suffix = f"_{self.architecture}_te.safetensors"
+        variant_files = []
+        for variant in self.text_encoder_cache_variants:
+            names = {e.name for e in os.scandir(variant["directory"]) if e.name.endswith(te_suffix)}
+            logger.info(f"caption variant '{variant['name']}': {len(names)} TE caches in {variant['directory']} (weight {variant['weight']})")
+            variant_files.append((variant, names))
+        variant_item_counts = {variant["name"]: 0 for variant in self.text_encoder_cache_variants}
+
         # assign cache files to item info
         # (width, height) -> [ItemInfo] or (width, height, other conds...) -> [ItemInfo]
         bucketed_item_info: dict[Union[tuple[int, int], Any], list[ItemInfo]] = {}
@@ -654,6 +684,15 @@ class ImageDataset(BaseDataset):
 
             item_info = ItemInfo(item_key, "", image_size, bucket_reso, latent_cache_path=cache_file)
             item_info.text_encoder_output_cache_path = text_encoder_output_cache_file
+            if variant_files:
+                paths, weights = [text_encoder_output_cache_file], [self.text_encoder_cache_base_weight]
+                for variant, names in variant_files:
+                    if f"{item_key}{te_suffix}" in names:
+                        paths.append(os.path.join(variant["directory"], f"{item_key}{te_suffix}"))
+                        weights.append(float(variant["weight"]))
+                        variant_item_counts[variant["name"]] += 1
+                if len(paths) > 1 and sum(weights) > 0:
+                    item_info.te_variant_paths, item_info.te_variant_weights = paths, weights
 
             bucket = bucketed_item_info.get(bucket_reso, [])
             for _ in range(self.num_repeats):
@@ -661,6 +700,8 @@ class ImageDataset(BaseDataset):
             bucketed_item_info[bucket_reso] = bucket
 
         self._warn_if_cache_count_mismatch(len(self.datasource), cache_item_keys)
+        if variant_files:
+            logger.info(f"items with caption variants (base weight {self.text_encoder_cache_base_weight}): {variant_item_counts}")
 
         # prepare batch manager
         self.batch_manager = BucketBatchManager(bucketed_item_info, self.batch_size, num_timestep_buckets=num_timestep_buckets)

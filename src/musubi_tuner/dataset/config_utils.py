@@ -60,6 +60,11 @@ class ImageDatasetParams(BaseDatasetParams):
     no_resize_control: Optional[bool] = False  # if True, control images are not resized to target resolution
     control_resolution: Optional[Tuple[int, int]] = None  # if set, control images are resized to this resolution
 
+    # optional caption variants: extra TE cache directories keyed by the same item basename; one of the
+    # available caches (base cache_directory + variants that have this item) is drawn per exposure
+    text_encoder_cache_variants: Optional[Sequence[dict]] = None
+    text_encoder_cache_base_weight: float = 1.0
+
 
 @dataclass
 class VideoDatasetParams(BaseDatasetParams):
@@ -131,6 +136,8 @@ class ConfigSanitizer:
         "fp_1f_no_post": bool,
         "no_resize_control": bool,
         "control_resolution": functools.partial(__validate_and_convert_scalar_or_twodim.__func__, int),
+        "text_encoder_cache_variants": [{voluptuous.Required("name"): str, voluptuous.Required("directory"): str, voluptuous.Required("weight"): Any(int, float)}],
+        "text_encoder_cache_base_weight": Any(int, float),
     }
     VIDEO_DATASET_DISTINCT_SCHEMA = {
         "video_directory": str,
