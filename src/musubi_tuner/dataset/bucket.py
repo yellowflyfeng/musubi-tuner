@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import collections
 import math
 import random
 from typing import Any, Optional, Tuple, TYPE_CHECKING
@@ -183,6 +184,9 @@ class BucketBatchManager:
         self.timestep_pool = None
         self.te_choice: Optional[dict[tuple[Any], list[int]]] = None  # per-epoch caption variant index per bucket position
         self.has_te_variants = any(item.te_variant_paths for bucket in self.buckets.values() for item in bucket)
+        self.te_schedule = "random"  # set by the dataset; "cycle" also needs te_seed / te_epoch
+        self.te_seed, self.te_epoch = 0, 0
+        self._te_cycle_orders: dict[str, list[int]] = {}
 
         # indices for enumerating batches. each batch is reso + batch_idx. reso is (width, height) or (width, height, frames)
         self.bucket_batch_indices: list[tuple[tuple[Any], int]] = []
@@ -244,13 +248,50 @@ class BucketBatchManager:
         if self.has_te_variants:
             # drawn after every pre-existing shuffle, so batch order and timesteps are unchanged; every worker
             # reseeds with seed+epoch before shuffle(), so all workers and ranks agree on the choices
-            self.te_choice = {
-                reso: [
-                    random.choices(range(len(item.te_variant_paths)), weights=item.te_variant_weights)[0] if item.te_variant_paths else 0
-                    for item in bucket
-                ]
-                for reso, bucket in self.buckets.items()
-            }
+            if self.te_schedule == "cycle":
+                self.te_choice = {}
+                for reso, bucket in self.buckets.items():
+                    # the num_repeats copies of an item take successive positions of its cycle within an epoch
+                    repeats = collections.Counter(item.item_key for item in bucket)
+                    seen: collections.Counter = collections.Counter()
+                    choices = []
+                    for item in bucket:
+                        if not item.te_variant_paths:
+                            choices.append(0)
+                            continue
+                        order = self._te_cycle_order(item)
+                        step = (self.te_epoch - 1) * repeats[item.item_key] + seen[item.item_key]
+                        seen[item.item_key] += 1
+                        choices.append(order[step % len(order)])
+                    self.te_choice[reso] = choices
+            else:
+                self.te_choice = {
+                    reso: [
+                        random.choices(range(len(item.te_variant_paths)), weights=item.te_variant_weights)[0] if item.te_variant_paths else 0
+                        for item in bucket
+                    ]
+                    for reso, bucket in self.buckets.items()
+                }
+
+    def _te_cycle_order(self, item) -> list[int]:
+        """Fixed per-item rotation over its caches: one random member of every group (in random group order),
+        then the remaining members. Depends only on the dataset seed and the item key, not on the global RNG."""
+        order = self._te_cycle_orders.get(item.item_key)
+        if order is None:
+            rng = random.Random(f"{self.te_seed}:{item.item_key}")
+            groups: dict[str, list[int]] = {}
+            for index, group in enumerate(item.te_variant_groups or [str(i) for i in range(len(item.te_variant_paths))]):
+                groups.setdefault(group, []).append(index)
+            first, rest = [], []
+            for members in groups.values():
+                members = members[:]
+                rng.shuffle(members)
+                first.append(members[0])
+                rest.extend(members[1:])
+            rng.shuffle(first)
+            rng.shuffle(rest)
+            order = self._te_cycle_orders[item.item_key] = first + rest
+        return order
 
     def __len__(self):
         return len(self.bucket_batch_indices)

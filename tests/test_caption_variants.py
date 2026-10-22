@@ -131,3 +131,84 @@ def test_variant_directory_must_differ_from_cache_directory(caches):
     root, dirs = caches
     with pytest.raises(ValueError, match="must differ"):
         _build(root, dirs, [{"name": "bad", "directory": str(dirs["cache"]), "weight": 1}])
+
+
+# --- cycle schedule: every group is visited before any group repeats ---------------------------------
+
+GROUP_LENGTHS = {"long": 40, "short": 3, "medium_1": 7, "medium_2": 8, "medium_3": 9}
+
+
+def _write_grouped_caches(root: Path, n_items: int = 120) -> dict[str, Path]:
+    dirs = {name: root / ("cache" if name == "long" else f"cache_te_{name}") for name in GROUP_LENGTHS}
+    for d in dirs.values():
+        d.mkdir(parents=True, exist_ok=True)
+    with (root / "train.jsonl").open("w") as f:
+        for i in range(n_items):
+            key = f"{i:07d}"
+            f.write(json.dumps({"image_path": f"/x/images/{key}.jpg", "caption": "long"}) + "\n")
+            save_file({"latents_1x64x64_bfloat16": torch.zeros(1, 64, 64, dtype=torch.bfloat16)}, str(dirs["long"] / f"{key}_0512x0512_qi21.safetensors"))
+            for name, length in GROUP_LENGTHS.items():
+                if name == "medium_3" and i % 3 == 0:
+                    continue  # some items lack a medium (omitted by caption QA)
+                te = {"varlen_vl21_embed_bfloat16": torch.zeros(length, 8, dtype=torch.bfloat16)}
+                save_file(te, str(dirs[name] / f"{key}_qi21_te.safetensors"))
+    return dirs
+
+
+def _build_cycle(root: Path, dirs, num_repeats=1):
+    dataset = {
+        "image_jsonl_file": str(root / "train.jsonl"),
+        "cache_directory": str(dirs["long"]),
+        "num_repeats": num_repeats,
+        "text_encoder_cache_schedule": "cycle",
+        "text_encoder_cache_variants": [
+            {"name": "short", "directory": str(dirs["short"])},
+            *({"name": m, "directory": str(dirs[m]), "group": "medium"} for m in ("medium_1", "medium_2", "medium_3")),
+        ],
+    }
+    user_config = {"general": {"resolution": [512, 512], "batch_size": 4, "enable_bucket": True, "bucket_no_upscale": False}, "datasets": [dataset]}
+    blueprint = BlueprintGenerator(ConfigSanitizer()).generate(user_config, argparse.Namespace(debug_dataset=False), architecture="qi21")
+    random.seed(7)
+    group = generate_dataset_group_by_blueprint(blueprint.dataset_group, training=True, shared_epoch=multiprocessing.Value("i", 0))
+    return group.datasets[0]
+
+
+def _lengths_by_item(dataset, epoch):
+    dataset.current_epoch = epoch
+    dataset.shuffle_buckets()
+    manager, out = dataset.batch_manager, collections.defaultdict(list)
+    for i in range(len(manager)):
+        reso, batch_idx = manager.bucket_batch_indices[i]
+        keys = [it.item_key for it in manager.buckets[reso][batch_idx * manager.batch_size : (batch_idx + 1) * manager.batch_size]]
+        for key, te in zip(keys, manager[i]["vl21_embed"]):
+            out[key].append(len(te))
+    return out
+
+
+def test_cycle_covers_long_short_and_medium_within_three_epochs_and_never_repeats_in_four(tmp_path):
+    dataset = _build_cycle(tmp_path, _write_grouped_caches(tmp_path))
+    seen = collections.defaultdict(list)
+    for epoch in (1, 2, 3, 4):
+        for key, lengths in _lengths_by_item(dataset, epoch).items():
+            seen[key] += lengths
+    medium = {GROUP_LENGTHS[m] for m in ("medium_1", "medium_2", "medium_3")}
+    for key, lengths in seen.items():
+        assert len(lengths) == 4 and len(set(lengths)) == 4
+        first3 = set(lengths[:3])
+        assert GROUP_LENGTHS["long"] in first3 and GROUP_LENGTHS["short"] in first3 and first3 & medium
+
+
+def test_cycle_is_reproducible_and_balanced_per_epoch(tmp_path):
+    dirs = _write_grouped_caches(tmp_path)
+    first, second = _build_cycle(tmp_path, dirs), _build_cycle(tmp_path, dirs)
+    for epoch in (1, 2, 3):
+        a, b = _lengths_by_item(first, epoch), _lengths_by_item(second, epoch)
+        assert a == b
+        groups = collections.Counter("medium" if v[0] in (7, 8, 9) else v[0] for v in a.values())
+        assert all(25 <= groups[g] <= 55 for g in (40, 3, "medium"))  # each group about a third of 120 items
+
+
+def test_cycle_repeats_take_successive_positions(tmp_path):
+    dataset = _build_cycle(tmp_path, _write_grouped_caches(tmp_path, n_items=40), num_repeats=2)
+    for key, lengths in _lengths_by_item(dataset, 1).items():
+        assert len(lengths) == 2 and lengths[0] != lengths[1]

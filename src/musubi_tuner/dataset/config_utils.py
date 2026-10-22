@@ -64,6 +64,10 @@ class ImageDatasetParams(BaseDatasetParams):
     # available caches (base cache_directory + variants that have this item) is drawn per exposure
     text_encoder_cache_variants: Optional[Sequence[dict]] = None
     text_encoder_cache_base_weight: float = 1.0
+    # "random": independent weighted draw per exposure; "cycle": per-item rotation that visits one member of
+    # every group before repeating a group (e.g. long, short and a medium within the first three epochs)
+    text_encoder_cache_schedule: str = "random"
+    text_encoder_cache_base_group: str = "long"
 
 
 @dataclass
@@ -136,8 +140,17 @@ class ConfigSanitizer:
         "fp_1f_no_post": bool,
         "no_resize_control": bool,
         "control_resolution": functools.partial(__validate_and_convert_scalar_or_twodim.__func__, int),
-        "text_encoder_cache_variants": [{voluptuous.Required("name"): str, voluptuous.Required("directory"): str, voluptuous.Required("weight"): Any(int, float)}],
+        "text_encoder_cache_variants": [
+            {
+                voluptuous.Required("name"): str,
+                voluptuous.Required("directory"): str,
+                voluptuous.Optional("weight", default=1.0): Any(int, float),
+                voluptuous.Optional("group"): str,
+            }
+        ],
         "text_encoder_cache_base_weight": Any(int, float),
+        "text_encoder_cache_schedule": Any("random", "cycle"),
+        "text_encoder_cache_base_group": str,
     }
     VIDEO_DATASET_DISTINCT_SCHEMA = {
         "video_directory": str,

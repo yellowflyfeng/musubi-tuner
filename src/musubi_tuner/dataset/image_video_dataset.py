@@ -71,6 +71,7 @@ class ItemInfo:
         # caption variants: alternative TE caches for the same latent, and their sampling weights
         self.te_variant_paths: Optional[list[str]] = None
         self.te_variant_weights: Optional[list[float]] = None
+        self.te_variant_groups: Optional[list[str]] = None
 
         # np.ndarray for video, list[np.ndarray] for image with multiple controls
         self.control_content: Optional[Union[np.ndarray, list[np.ndarray]]] = None
@@ -338,6 +339,8 @@ class ImageDataset(BaseDataset):
         control_resolution: Optional[Tuple[int, int]] = None,
         text_encoder_cache_variants: Optional[Sequence[dict]] = None,
         text_encoder_cache_base_weight: float = 1.0,
+        text_encoder_cache_schedule: str = "random",
+        text_encoder_cache_base_group: str = "long",
         debug_dataset: bool = False,
         architecture: str = "no_default",
     ):
@@ -372,6 +375,10 @@ class ImageDataset(BaseDataset):
                 raise ValueError(f"text_encoder_cache_variants weight must be nonnegative: {variant}")
         if self.text_encoder_cache_base_weight < 0:
             raise ValueError("text_encoder_cache_base_weight must be nonnegative")
+        if text_encoder_cache_schedule not in ("random", "cycle"):
+            raise ValueError(f"text_encoder_cache_schedule must be 'random' or 'cycle': {text_encoder_cache_schedule}")
+        self.text_encoder_cache_schedule = text_encoder_cache_schedule
+        self.text_encoder_cache_base_group = text_encoder_cache_base_group
 
         if self.architecture == ARCHITECTURE_MINIMAX_H3:
             # one-frame (image) training: t2va targets (K=0), fl2va editing/inbetween targets with
@@ -454,8 +461,10 @@ class ImageDataset(BaseDataset):
         metadata["has_control"] = self.has_control
         if self.text_encoder_cache_variants:
             metadata["text_encoder_cache_base_weight"] = self.text_encoder_cache_base_weight
+            metadata["text_encoder_cache_schedule"] = self.text_encoder_cache_schedule
+            metadata["text_encoder_cache_base_group"] = self.text_encoder_cache_base_group
             metadata["text_encoder_cache_variants"] = [
-                {"name": v["name"], "directory": os.path.basename(os.path.normpath(v["directory"])), "weight": v["weight"]}
+                {"name": v["name"], "directory": os.path.basename(os.path.normpath(v["directory"])), "weight": v.get("weight", 1.0), "group": v.get("group", v["name"])}
                 for v in self.text_encoder_cache_variants
             ]
         return metadata
@@ -686,13 +695,16 @@ class ImageDataset(BaseDataset):
             item_info.text_encoder_output_cache_path = text_encoder_output_cache_file
             if variant_files:
                 paths, weights = [text_encoder_output_cache_file], [self.text_encoder_cache_base_weight]
+                groups = [self.text_encoder_cache_base_group]
                 for variant, names in variant_files:
                     if f"{item_key}{te_suffix}" in names:
                         paths.append(os.path.join(variant["directory"], f"{item_key}{te_suffix}"))
-                        weights.append(float(variant["weight"]))
+                        weights.append(float(variant.get("weight", 1.0)))
+                        groups.append(variant.get("group", variant["name"]))
                         variant_item_counts[variant["name"]] += 1
                 if len(paths) > 1 and sum(weights) > 0:
                     item_info.te_variant_paths, item_info.te_variant_weights = paths, weights
+                    item_info.te_variant_groups = groups
 
             bucket = bucketed_item_info.get(bucket_reso, [])
             for _ in range(self.num_repeats):
@@ -701,10 +713,13 @@ class ImageDataset(BaseDataset):
 
         self._warn_if_cache_count_mismatch(len(self.datasource), cache_item_keys)
         if variant_files:
-            logger.info(f"items with caption variants (base weight {self.text_encoder_cache_base_weight}): {variant_item_counts}")
+            logger.info(
+                f"items with caption variants (schedule {self.text_encoder_cache_schedule}, base weight {self.text_encoder_cache_base_weight}): {variant_item_counts}"
+            )
 
         # prepare batch manager
         self.batch_manager = BucketBatchManager(bucketed_item_info, self.batch_size, num_timestep_buckets=num_timestep_buckets)
+        self.batch_manager.te_schedule = self.text_encoder_cache_schedule
         self.batch_manager.show_bucket_info()
 
         self.num_train_items = sum([len(bucket) for bucket in bucketed_item_info.values()])
@@ -712,6 +727,7 @@ class ImageDataset(BaseDataset):
     def shuffle_buckets(self):
         # set random seed for this epoch
         random.seed(self.seed + self.current_epoch)
+        self.batch_manager.te_seed, self.batch_manager.te_epoch = self.seed, self.current_epoch  # for the cycle schedule
         self.batch_manager.shuffle()
 
     def __len__(self):

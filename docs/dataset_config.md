@@ -466,6 +466,18 @@ python src/musubi_tuner/flux_2_cache_text_encoder_outputs.py --dataset_config sh
 - A variant directory must differ from `cache_directory`. `--skip_existing` does not detect changed caption text, so use a new directory when a variant is regenerated.
 - Variant names, directory names and weights are saved in the dataset metadata of the trained LoRA.
 
+**Cycle schedule.** With `text_encoder_cache_schedule = "cycle"`, each item follows a fixed rotation instead of independent draws: one member of every group (in a random group order), then the remaining members. A variant's group defaults to its name; the base caption's group is `text_encoder_cache_base_group` (default `"long"`). Weights are ignored. With groups long / short / medium (three medium variants), every image sees the long, the short and one medium caption within three epochs, and four distinct captions in four epochs. The rotation depends only on the dataset seed and the item key, so all workers agree and resuming gives the same choices; `num_repeats` copies take successive positions of the rotation.
+
+```toml
+text_encoder_cache_schedule = "cycle"
+text_encoder_cache_variants = [
+  { name = "short", directory = "/path/to/cache_te_short" },
+  { name = "medium_1", directory = "/path/to/cache_te_medium_1", group = "medium" },
+  { name = "medium_2", directory = "/path/to/cache_te_medium_2", group = "medium" },
+  { name = "medium_3", directory = "/path/to/cache_te_medium_3", group = "medium" },
+]
+```
+
 <details>
 <summary>日本語</summary>
 
