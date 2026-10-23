@@ -274,8 +274,10 @@ class BucketBatchManager:
                 }
 
     def _te_cycle_order(self, item) -> list[int]:
-        """Fixed per-item rotation over its caches: one random member of every group (in random group order),
-        then the remaining members. Depends only on the dataset seed and the item key, not on the global RNG."""
+        """Fixed per-item rotation over its caches: one random member of every group plus one extra member,
+        in random order, then the remaining members. The extra member keeps the epoch after the first pass over
+        the groups mixed across items (otherwise every item would draw from its largest group at the same epoch).
+        Depends only on the dataset seed and the item key, not on the global RNG."""
         order = self._te_cycle_orders.get(item.item_key)
         if order is None:
             rng = random.Random(f"{self.te_seed}:{item.item_key}")
@@ -288,9 +290,10 @@ class BucketBatchManager:
                 rng.shuffle(members)
                 first.append(members[0])
                 rest.extend(members[1:])
-            rng.shuffle(first)
             rng.shuffle(rest)
-            order = self._te_cycle_orders[item.item_key] = first + rest
+            head = first + rest[:1]
+            rng.shuffle(head)
+            order = self._te_cycle_orders[item.item_key] = head + rest[1:]
         return order
 
     def __len__(self):
