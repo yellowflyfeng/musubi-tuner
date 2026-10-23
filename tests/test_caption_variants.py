@@ -135,7 +135,9 @@ def test_variant_directory_must_differ_from_cache_directory(caches):
 
 # --- cycle schedule: every group is visited before any group repeats ---------------------------------
 
-GROUP_LENGTHS = {"long": 40, "short": 3, "medium_1": 7, "medium_2": 8, "medium_3": 9}
+GROUP_LENGTHS = {"long": 40, "short": 3, "medium_1": 7, "medium_2": 8, "medium_3": 9, "tiny": 2}
+MEDIUM = {GROUP_LENGTHS[m] for m in ("medium_1", "medium_2", "medium_3")}
+group_of = lambda n: "medium" if n in MEDIUM else n
 
 
 def _write_grouped_caches(root: Path, n_items: int = 120) -> dict[str, Path]:
@@ -155,7 +157,7 @@ def _write_grouped_caches(root: Path, n_items: int = 120) -> dict[str, Path]:
     return dirs
 
 
-def _build_cycle(root: Path, dirs, num_repeats=1):
+def _build_cycle(root: Path, dirs, num_repeats=1, tiny=True):
     dataset = {
         "image_jsonl_file": str(root / "train.jsonl"),
         "cache_directory": str(dirs["long"]),
@@ -164,6 +166,7 @@ def _build_cycle(root: Path, dirs, num_repeats=1):
         "text_encoder_cache_variants": [
             {"name": "short", "directory": str(dirs["short"])},
             *({"name": m, "directory": str(dirs[m]), "group": "medium"} for m in ("medium_1", "medium_2", "medium_3")),
+            *([{"name": "tiny", "directory": str(dirs["tiny"])}] if tiny else []),
         ],
     }
     user_config = {"general": {"resolution": [512, 512], "batch_size": 4, "enable_bucket": True, "bucket_no_upscale": False}, "datasets": [dataset]}
@@ -185,27 +188,44 @@ def _lengths_by_item(dataset, epoch):
     return out
 
 
-def test_cycle_covers_long_short_and_medium_within_four_epochs_without_repeats(tmp_path):
-    dataset = _build_cycle(tmp_path, _write_grouped_caches(tmp_path))
+def _groups_seen(dataset, epochs):
     seen = collections.defaultdict(list)
-    for epoch in (1, 2, 3, 4):
+    for epoch in epochs:
         for key, lengths in _lengths_by_item(dataset, epoch).items():
-            seen[key] += lengths
-    medium = {GROUP_LENGTHS[m] for m in ("medium_1", "medium_2", "medium_3")}
-    for key, lengths in seen.items():
-        assert len(lengths) == 4 and len(set(lengths)) == 4
-        assert GROUP_LENGTHS["long"] in lengths and GROUP_LENGTHS["short"] in lengths and len(set(lengths) & medium) == 2
+            seen[key] += [group_of(n) for n in lengths]
+    return seen
 
 
-def test_cycle_is_reproducible_and_balanced_per_epoch(tmp_path):
+@pytest.mark.parametrize("tiny", [True, False])
+def test_cycle_covers_every_group_once_per_round(tmp_path, tiny):
+    # long / short / medium / tiny: four epochs see each group exactly once; without tiny, three epochs do
+    dataset = _build_cycle(tmp_path, _write_grouped_caches(tmp_path), tiny=tiny)
+    n_groups = 4 if tiny else 3
+    for key, groups in _groups_seen(dataset, range(1, n_groups + 1)).items():
+        assert len(groups) == n_groups and len(set(groups)) == n_groups
+
+
+def test_cycle_mediums_take_turns_across_rounds(tmp_path):
+    dataset = _build_cycle(tmp_path, _write_grouped_caches(tmp_path), tiny=False)
+    seen = collections.defaultdict(list)
+    for epoch in range(1, 7):
+        for key, lengths in _lengths_by_item(dataset, epoch).items():
+            seen[key] += [n for n in lengths if n in MEDIUM]
+    for key, mediums in seen.items():
+        assert len(mediums) == 2 and mediums[0] != mediums[1]
+
+
+@pytest.mark.parametrize("tiny", [True, False])
+def test_cycle_is_reproducible_and_balanced_per_epoch(tmp_path, tiny):
     dirs = _write_grouped_caches(tmp_path)
-    first, second = _build_cycle(tmp_path, dirs), _build_cycle(tmp_path, dirs)
+    first, second = _build_cycle(tmp_path, dirs, tiny=tiny), _build_cycle(tmp_path, dirs, tiny=tiny)
+    n_groups = 4 if tiny else 3
     for epoch in (1, 2, 3, 4):
         a, b = _lengths_by_item(first, epoch), _lengths_by_item(second, epoch)
         assert a == b
-        groups = collections.Counter("medium" if v[0] in (7, 8, 9) else v[0] for v in a.values())
-        # every epoch mixes all groups: about a quarter long, a quarter short, half medium of 120 items
-        assert all(15 <= groups[g] <= 50 for g in (40, 3)) and 40 <= groups["medium"] <= 80
+        groups = collections.Counter(group_of(v[0]) for v in a.values())
+        # every epoch mixes all groups: about 1/n_groups of the 120 items each
+        assert len(groups) == n_groups and all(120 / n_groups / 2 <= c <= 120 / n_groups * 1.6 for c in groups.values())
 
 
 def test_cycle_repeats_take_successive_positions(tmp_path):
@@ -216,11 +236,10 @@ def test_cycle_repeats_take_successive_positions(tmp_path):
 
 def test_cycle_batches_mix_caption_lengths_in_every_epoch(tmp_path):
     dataset = _build_cycle(tmp_path, _write_grouped_caches(tmp_path))
-    group = lambda n: "medium" if n in (7, 8, 9) else n
     for epoch in (1, 2, 3, 4):
         dataset.current_epoch = epoch
         dataset.shuffle_buckets()
         manager = dataset.batch_manager
-        batches = [{group(len(te)) for te in manager[i]["vl21_embed"]} for i in range(len(manager))]
+        batches = [{group_of(len(te)) for te in manager[i]["vl21_embed"]} for i in range(len(manager))]
         uniform = sum(len(b) == 1 for b in batches)
         assert uniform <= len(batches) // 4  # independent per-item positions: ~7% of 4-image batches by chance

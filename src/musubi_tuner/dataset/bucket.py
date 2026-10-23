@@ -274,9 +274,9 @@ class BucketBatchManager:
                 }
 
     def _te_cycle_order(self, item) -> list[int]:
-        """Fixed per-item rotation over its caches: one random member of every group plus one extra member,
-        in random order, then the remaining members. The extra member keeps the epoch after the first pass over
-        the groups mixed across items (otherwise every item would draw from its largest group at the same epoch).
+        """Fixed per-item rotation over its caches, in rounds: each round holds one member of every group in a
+        random order, and the members of a group take turns across rounds. Any run of len(groups) epochs therefore
+        covers every group, and every epoch mixes the groups across items, so batches are not uniform in caption length.
         Depends only on the dataset seed and the item key, not on the global RNG."""
         order = self._te_cycle_orders.get(item.item_key)
         if order is None:
@@ -284,16 +284,13 @@ class BucketBatchManager:
             groups: dict[str, list[int]] = {}
             for index, group in enumerate(item.te_variant_groups or [str(i) for i in range(len(item.te_variant_paths))]):
                 groups.setdefault(group, []).append(index)
-            first, rest = [], []
-            for members in groups.values():
-                members = members[:]
-                rng.shuffle(members)
-                first.append(members[0])
-                rest.extend(members[1:])
-            rng.shuffle(rest)
-            head = first + rest[:1]
-            rng.shuffle(head)
-            order = self._te_cycle_orders[item.item_key] = head + rest[1:]
+            members = [rng.sample(m, len(m)) for m in groups.values()]
+            order = []
+            for r in range(max(len(m) for m in members)):
+                round_ = [m[r % len(m)] for m in members]
+                rng.shuffle(round_)
+                order += round_
+            self._te_cycle_orders[item.item_key] = order
         return order
 
     def __len__(self):
