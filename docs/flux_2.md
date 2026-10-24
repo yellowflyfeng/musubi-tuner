@@ -179,6 +179,7 @@ accelerate launch --num_cpu_threads_per_process 1 --mixed_precision bf16 src/mus
 - **Requires** specifying `--network_module networks.lora_flux_2`.
 - `--mixed_precision bf16` is recommended for FLUX.2 training.
 - `--timestep_sampling flux2_shift` is recommended for FLUX.2.
+- `--timestep_sampling flux2_infer_shift` samples t with the same distribution as inference (uniform t warped by the resolution- and step-dependent shift of the sampler); set `--flux2_infer_steps` to the sampling step count (default 50).
 - Use the `--model_version` option for Flux.2 Klein training (if omitted, defaults to `dev`).
 - Memory saving options like `--fp8_base --fp8_scaled` (for DiT, specify both) and `--fp8_text_encoder` (for Text Encoder) are available. `--fp8_scaled` is recommended when using `--fp8_base` for DiT.
 -  `--gradient_checkpointing` and `--gradient_checkpointing_cpu_offload` are available for memory savings. See [HunyuanVideo documentation](./hunyuan_video.md#memory-optimization) for details.
@@ -209,6 +210,7 @@ FLUX.2の学習は専用のスクリプト`flux_2_train_network.py`を使用し�
 - `--network_module networks.lora_flux_2`を指定する必要があります。
 - FLUX.2の学習には`--mixed_precision bf16`を推奨します。
 - FLUX.2には`--timestep_sampling flux2_shift`を推奨します。
+- `--timestep_sampling flux2_infer_shift`は推論と同じ分布（一様なtを解像度とステップ数に応じてシフト）でtをサンプリングします。`--flux2_infer_steps`に推論ステップ数を指定してください（デフォルト50）。
 - `--fp8_base --fp8_scaled`（DiT用、両方指定してください）や`--fp8_text_encoder`（テキストエンコーダー用）などのメモリ節約オプションが利用可能です。`--fp8_base`をDiTに使用する場合は、`--fp8_scaled`を推奨します。
 - メモリ節約のために`--gradient_checkpointing`が利用可能です。
 - `--vae_dtype`オプションは、VAEの重みデータ型を指定するためのオプションです。デフォルトは`float32`で、`bfloat16`も指定可能です。

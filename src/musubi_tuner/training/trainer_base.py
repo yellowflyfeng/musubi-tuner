@@ -101,6 +101,7 @@ DIRECT_TIMESTEP_SAMPLING_METHODS = frozenset(
         "qinglong_flux",
         "qinglong_qwen",
         "flux2_shift",
+        "flux2_infer_shift",
     }
 )
 
@@ -643,6 +644,16 @@ class NetworkTrainer:
                 elif args.timestep_sampling == "ideogram4_shift":
                     h, w = latents.shape[-2:]
                     t = compute_ideogram4_shift_timestep(rand(batch_size, org_timesteps), h, w)
+
+                elif args.timestep_sampling == "flux2_infer_shift":
+                    # same t distribution as FLUX.2 inference: uniform t warped by the resolution- and step-dependent mu
+                    # of flux2_utils.get_schedule, so training covers the noise levels sampling actually visits
+                    from musubi_tuner.flux_2.flux2_utils import compute_empirical_mu
+
+                    h, w = latents.shape[-2:]
+                    shift = math.exp(compute_empirical_mu(h * w, args.flux2_infer_steps))
+                    t = rand(batch_size, org_timesteps)
+                    t = (t * shift) / (1 + (shift - 1) * t)
 
                 elif args.timestep_sampling.endswith("shift"):
                     if args.timestep_sampling == "shift":

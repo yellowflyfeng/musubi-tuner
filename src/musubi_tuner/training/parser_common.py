@@ -449,6 +449,7 @@ def _add_timestep_args(parser: argparse.ArgumentParser) -> None:
             "shift",
             "flux_shift",
             "flux2_shift",
+            "flux2_infer_shift",
             "ideogram4_shift",
             "qwen_shift",
             "qwen21_shift",
@@ -466,6 +467,13 @@ def _add_timestep_args(parser: argparse.ArgumentParser) -> None:
         type=float,
         default=1.0,
         help="Discrete flow shift for the Euler Discrete Scheduler, default is 1.0. / Euler Discrete Schedulerの離散フローシフト、デフォルトは1.0。",
+    )
+    parser.add_argument(
+        "--flux2_infer_steps",
+        type=int,
+        default=50,
+        help="Sampling steps whose schedule flux2_infer_shift reproduces (FLUX.2 mu depends on the step count), default 50"
+        " / flux2_infer_shiftが再現する推論ステップ数（FLUX.2のmuはステップ数に依存）、デフォルト50",
     )
     parser.add_argument(
         "--sigmoid_scale",
